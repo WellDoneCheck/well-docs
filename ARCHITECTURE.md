@@ -47,18 +47,12 @@
   強型別，穩定性高，與前端共用DTO
 
 
-### 圖片切割服務 (Image Tiling / Chunking Service)
+### 圖片切割服務
 - 讀取水土人員提供的空拍正射影像 (Orthomosaic)，格式為 GeoTIFF，
   由 Pix4Dmapper 拼接輸出
-- 已透過 gdalinfo 與檔頭 hex 檢查確認技術規格：
-  - **BigTIFF**（版本號 0x2B，非經典 TIFF 的 0x2A），因未壓縮資料量約 13.6GB，
-    遠超過經典 TIFF 的 4GB 定址上限
-  - **Strip-based 儲存**（Block=寬度x1，逐掃描線儲存，無內部分塊 Tiling）
-  - **LZW 壓縮 + Predictor=2**（水平差分預測，解壓縮後需額外做差分還原
-    才能得到正確像素值）
-  - 座標系統為 **EPSG:3826**（TWD97 / TM2 121度分帶），座標資訊確認內嵌於
-    TIFF 本身（gdalinfo 的 Files 欄位僅列出 .tif，未關聯外部 .tfw/.prj）
-  - 含 Alpha 遮罩 band，標記空拍未覆蓋區域
+- 已確認規格：BigTIFF、Strip-based 儲存、LZW 壓縮 + Predictor=2、
+  座標系統 EPSG:3826
+  詳見[NOTES.md](./NOTE.md###空拍圖規格)
 - 已知最大檔案 7.91GB（僅為目前已檢查範圍內的最大值，非確認上限），
   無法一次載入 RAM，需以串流方式逐行讀取
 - 依照 5000×5000 尺寸做 Sliding Window 切割，每個切割出的小圖需保留
@@ -68,33 +62,23 @@
   輸出結果（小圖 + 座標）交由 Async Worker 收集並轉交模型端推論
 
 #### 技術選型
-* Go
-  由學長主導決策。初步理由：
+* Go + GDAL (go-gdal binding 或直接透過 CGO 呼叫)
+  使用 GDAL 處理底層 TIFF/BigTIFF 解析、LZW 解壓縮與 Predictor 還原，
+  在此基礎上自行實作 5000x5000 的 Sliding Window 切割與座標對應邏輯。
   - 無 GIL (Global Interpreter Lock) 限制，可用 goroutine 平行處理
     多個 strip 的解壓縮與切割
   - encoding/binary 套件對二進位格式解析原生支援，處理 TIFF 檔頭與
     IFD (Image File Directory) 結構較直接
   - 編譯為單一執行檔，部署與跨平台無額外執行環境依賴
 
-  **待確認事項（尚未取得學長回覆，暫列為開放問題）：**
-  1. 是否已評估過現成的 Go 語言 GDAL 封裝 (go-gdal) 或 libvips 封裝
-     (bimg/govips)？這兩者底層皆已解決「以少量 RAM 串流讀取巨大
-     TIFF/GeoTIFF」的問題，且明確支援 BigTIFF 讀取。若排除這些方案，
-     需要記錄具體原因（例如 CGO 依賴造成部署複雜度提升）。
-  2. 手刻的解析邏輯是否已依照版本號（0x2A / 0x2B）分別處理
-     32-bit / 64-bit offset？目前已確認檔案為 BigTIFF，若程式碼假設
-     為經典 TIFF 結構，讀取位置會錯誤。
-  3. 是否已處理 PREDICTOR=2 的差分還原？若解壓縮後未做這一步，
-     像素值會有規律性偏移，但不一定會直接報錯，需額外驗證。
-  4. 正確性驗證方式：建議以同一測試檔案，比對 GDAL/Python rasterio
-     切出的結果與 Go 程式切出的結果是否逐像素一致 (pixel-diff)，
-     尚未確認是否已執行此驗證。
+  **待確認事項（暫列為開放問題）：**
+  1. Sliding Window 的實作是否正確處理邊界情況（例如原圖尺寸無法被
+     5000 整除時，最後一塊如何處理：補邊 padding 還是縮小尺寸）
+  2. 每個切割出的小圖，座標轉換（像素座標 → EPSG:3826 地理座標）
+     的計算是否正確
+  3. 記憶體釋放時機是否確實在每個 window 處理完後執行，
+     而非等到整份檔案讀完才釋放
 
-  **已知代價（若最終仍採手刻方案）：**
-  - 需額外驗證上述 3 項 TIFF 規格細節的正確性，測試與除錯成本
-    高於直接使用現成函式庫
-  - 目前僅學長一人熟悉此段解析邏輯，屬單點知識風險 (Bus Factor)，
-    需評估是否需要文件化交接
 
 
 ### Async Worker
