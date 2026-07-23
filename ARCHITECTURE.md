@@ -4,10 +4,18 @@
 ## 內部
 
 ### 前端
-- 登入介面（無公開註冊）
-- 大檔案圖片上傳（空拍圖，體積大）
-- 辨識結果的人工審核介面（可能需要顯示 bounding box、可勾選確認/刪除）
-- 地圖檢視（載入 NLSC 底圖、顯示標記點、點擊查詳情）
+
+
+| 元件 | 職責 |
+|---|---|
+| Login(登入) | 帳密輸入、送出驗證（無公開註冊） |
+| Upload(圖片上傳) | 大檔案(空拍圖)選取、上傳進度、presigned URL 直傳邏輯 |
+| Result Review(辨識結果審核) | human in loop，顯示 bounding box、勾選確認/刪除 |
+| Map(地圖檢視) | 載入 NLSC 底圖、顯示已審核標記、詳情查詢 |
+| Detection History(辨識記錄) | 唯讀瀏覽辨識紀錄列表 |
+| Account(帳號管理) | 管理員對他人帳號 CRUD,僅管理員可見 |
+
+
 - 這是一個內部後台系統，不對外公開、無SEO需求，故以CSR為主
 
 ####　技術選型
@@ -31,12 +39,16 @@
   強型別，穩定性高，與後端共用DTO，降低資料格式不一致的風險
 
 ### 主後端
-- 使用者認證（登入、無公開註冊、管理員手動建帳號）
-- 圖片上傳的接收與轉發（大檔案，需要與 Object Storage / Queue 協調）
-- 佇列任務派發與狀態追蹤（把推論工作丟給 Async Worker，追蹤進度）
-- 審核流程的 CRUD（確認/刪除辨識結果）
-- 地圖資料查詢（結合 PostgreSQL + GIS 的空間查詢）
-- 權限控管（一般使用者 vs 系統管理員）
+
+| 層 | 職責 |
+|---|---|
+| Controller Layer(控制器層) | 接收 HTTP request、驗證格式、轉發、包裝 response |
+| Flow Dispatch(任務流程派發) | 觸發 Async Worker 開始一個 Flow、查詢 Flow 層級整體狀態 |
+| Review Workflow(審核流程) | 審核結果的確認/刪除、狀態轉換 |
+| Permission Policy(權限管理) | 角色權限判斷(含帳號管理職責併入於此) |
+| Repositories(資料存取) | 封裝 PostgreSQL/PostGIS 查詢邏輯 |
+| Authentication(登入驗證) | 登入驗證、身份確認 |
+| Upload Coordination(上傳協調) | 簽發 presigned URL,讓大檔案繞過主後端直傳 Object Storage |
 
 ####　技術選型
 * Nest.js
@@ -48,7 +60,17 @@
 
 
 ### 圖片切割服務
-- 讀取水土人員提供的空拍正射影像 (Orthomosaic)，格式為 GeoTIFF，
+
+| 層 | 職責 |
+|---|---|
+| Streaming Decoder(串流解碼) | 串流讀取 BigTIFF、處理 strip-based 儲存、LZW+Predictor=2 差分還原、邊讀邊釋放記憶體 |
+| Tile Splitting(子圖切割) | 將解碼出的橫向長條做垂直累積(Row Buffering)+ 水平切割(Column Slicing),重組成正方形子圖,處理 sliding window 重疊 |
+| Tile Uploader(子圖上傳) | 將切好的子圖寫入 Object Storage |
+| Tile Manifest Reporting(子圖清單回報) | 收集座標與儲存路徑,組成 metadata manifest 回報給 Async Worker |
+
+**需要 Tile Splitting的原因:** 檔案為 strip-based 儲存(Block=寬度×1),解碼一次拿到的是橫跨全寬、僅 1 行高的長條,並非正方形。需先垂直累積夠切割高度(如 5000 行),再從累積出的寬版面橫向切出定寬視窗,才能重組成正方形子圖。此重組是解碼完成後獨立的二維視窗運算,不屬於解碼的副產品。
+
+- 讀取水土人員提供的空拍正射影像，格式為 GeoTIFF，
   由 Pix4Dmapper 拼接輸出
 - 已確認規格：BigTIFF、Strip-based 儲存、LZW 壓縮 + Predictor=2、
   座標系統 EPSG:3826
@@ -95,7 +117,8 @@
   Redis只是底層儲存方案，狀態機、重試機制等實作不想造輪子，拿現有的來用
   與Nest.js有官方整合
 
-  
+
+
 ### SQL
 - 儲存使用者、任務、水井、審核紀錄等結構化資料，並支援空間查詢
 
@@ -105,6 +128,20 @@
   授權較MySQL寬鬆
 * PostGIS
   座標轉換、空間索引和函數、地圖工具整合完整
+
+
+### 物件存儲(選用)
+- 儲存空拍圖等大型檔案，透過 Presigned URL 模式讓前端/Worker 直接存取，
+  避免主後端負擔檔案傳輸流量
+
+* AWS S3
+  不確定有沒有資源能夠存取大量的空拍圖
+  快速 不限大小 要的時候再讀 這樣不用占用RAM的空間
+  且不確定圖能不能上雲端
+
+* 備案
+  若圖資因資料主權/授權限制不可上境外雲端，可改用自架的
+  S3-compatible 物件儲存（如 MinIO），API 相容故程式碼改動成本低
 
 
 ### 模型
@@ -136,15 +173,4 @@
   可能未經通知即封鎖存取，不適合作為正式產品底圖來源，
   僅可作開發階段臨時測試
 
-### 物件存儲(選用)
-- 儲存空拍圖等大型檔案，透過 Presigned URL 模式讓前端/Worker 直接存取，
-  避免主後端負擔檔案傳輸流量
 
-* AWS S3
-  不確定有沒有資源能夠存取大量的空拍圖
-  快速 不限大小 要的時候再讀 這樣不用占用RAM的空間
-  且不確定圖能不能上雲端
-
-* 備案
-  若圖資因資料主權/授權限制不可上境外雲端，可改用自架的
-  S3-compatible 物件儲存（如 MinIO），API 相容故程式碼改動成本低
