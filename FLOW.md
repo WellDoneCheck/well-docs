@@ -31,11 +31,41 @@
 **後續評估時機:** 若上線後有具體使用者回饋顯示輪詢頻率不足以滿足需求,再評估疊加 SSE,屆時輪詢 API 仍保留作為 fallback,不會是重工。
  
 ---
+
+## 水土審核 Copilot 流程(自然語言空間問答)
+
+1. 使用者於 Copilot 對話介面輸入自然語言指令(如查詢條件、地理範圍)
+2. Core Backend 的 Query Translation 呼叫 LLM API,將自然語言解析為結構化查詢意圖(JSON),LLM 不生成可執行查詢語法、不接觸水井座標資料
+3. Query Builder 依白名單欄位與運算子,將結構化意圖組成參數化 PostGIS 查詢
+4. 若查詢涉及地理範圍限定(如「沿海」),向 NLSC WFS 取得對應行政區界資料(Lazy Fetch and Cache,首次查詢時取得並快取,ST_Transform 轉換為 EPSG:3826 後再與水井座標做 ST_DWithin)
+5. 執行查詢,結果以清單/地圖呈現給使用者
+6. 使用者可指定欄位與格式(CSV/XLSX),由 Export Service 產生清冊供下載;未指定時使用預設模板;僅於使用者明確要求時才產生
+
+---
+
+## 跨期比對流程(4D 時空光軸)
+
+1. 使用者針對同一區域進行多次上傳,各次上傳各自走過現有的系統內部流程(見上方),各自完成 Result Aggregation 寫入 Data Storage
+2. Result Aggregation 寫入完成後,觸發 Temporal Change Detection,將本次新確認的水井與歷史紀錄比對,判斷是否為新增
+3. 前端 Timeline 元件讀取各期資料,以時間軸/雙視窗同步方式呈現同一位置跨期的水井新增歷程
+
+---
+
+## AI 生成模擬圖流程
+
+1. 審核人員於 Result Review 頁面,針對俯視辨識困難的疑似點位,手動觸發生成
+2. 請求排入 Queue Store 成為獨立 job(單一 job,不建立 parent-child job 樹)
+3. Generative Simulation 元件執行生成式模型推論(實作細節待學長確認)
+4. 前端沿用既有輪詢機制查詢生成狀態,完成後顯示模擬圖,並附「AI 生成模擬,僅供參考」之提示
+
+---
  
 ## 待確認事項(承接 QA.md 既有問題,新增本次討論衍生的問題)
  
 - Tiling Service 的切割顆粒度(現行 5000×5000)與是否導入 COG 直讀方案,詳見 ARCHITECTURE.md「圖片切割服務」章節待確認事項,需先向學長確認後再決定是否調整本流程中的步驟 3。
 - Redis 持久化策略(AOF/RDB 設定)、BullMQ stalled job 偵測參數,實作時需依此文件與 ARCHITECTURE.md 中「Async Worker」章節的建議進行設定與實測驗證。
+- 跨期比對中「同一口井」的距離判斷門檻,待井的實際尺寸與模型框選誤差實測後訂定。
+- AI 生成模擬圖的排隊/輪詢機制,待與學長確認是否採用此設計。
  
 
 ## 空拍圖
